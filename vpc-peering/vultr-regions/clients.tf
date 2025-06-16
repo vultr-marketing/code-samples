@@ -1,4 +1,4 @@
-# Client instances
+# Represents example service
 resource "vultr_instance" "client" {
   for_each    = { for idx, instance in var.tailscale_instances : instance.region => instance }
   plan        = var.instance_plan
@@ -13,16 +13,11 @@ resource "vultr_instance" "client" {
   depends_on  = [vultr_instance.tailscale]
 
   tags = [
-    "Role=Tailscale-client-${each.value.region}",
+    "client-node-${each.value.region}",
+    "headscale-mesh"
   ]
-
-  # lifecycle {
-  #   prevent_destroy = true
-  #   ignore_changes  = [script_id]
-  # }
 }
 
-# Client IPs
 output "client_ips" {
   description = "IP information for client instances"
   value = {
@@ -37,5 +32,3 @@ output "client_ips" {
     }
   }
 }
-
-# Need to restart frr service after configuration

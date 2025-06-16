@@ -1,14 +1,9 @@
-# Vultr API Configuration
-vultr_api_key = "Your Vultr API Key"
+vultr_api_key = "YOUR_API_KEY"
 
-# Instance configuration
-instance_plan = "voc-c-2c-4gb-75s-amd"
-user_scheme   = "limited"
-
-# Headscale instance configuration
 headscale_region = "ams"
+user_scheme   = "limited"
+instance_plan = "voc-c-2c-4gb-75s-amd"
 
-# Tailscale instances configuration
 tailscale_instances = [
   {
     region      = "atl"

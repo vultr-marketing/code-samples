@@ -1,4 +1,12 @@
-# Headscale instance
+# Virtual Private Network
+resource "vultr_vpc" "tailscale" {
+  for_each       = { for idx, instance in var.tailscale_instances : instance.region => instance }
+  region         = each.value.region
+  v4_subnet      = each.value.subnet
+  v4_subnet_mask = each.value.subnet_mask
+}
+
+# Control Server
 resource "vultr_instance" "headscale" {
   plan        = var.instance_plan
   region      = var.headscale_region
@@ -12,16 +20,12 @@ resource "vultr_instance" "headscale" {
   })
 
   tags = [
-    "Role=Headscale",
+    "control-server",
+    "headscale-mesh"
   ]
-
-  # lifecycle {
-  #   prevent_destroy = true
-  #   ignore_changes  = [user_data]
-  # }
 }
 
-# Tailscale instances
+# Tailscale Client a.k.a. tailnet Peer
 resource "vultr_instance" "tailscale" {
   for_each    = { for idx, instance in var.tailscale_instances : instance.region => instance }
   plan        = var.instance_plan
@@ -37,16 +41,11 @@ resource "vultr_instance" "tailscale" {
   })
 
   tags = [
-    "Role=Tailscale-Gateway-${each.value.region}",
+    "gateway-node-${each.value.region}",
+    "headscale-mesh"
   ]
-
-  #   lifecycle {
-  #     prevent_destroy = true
-  #     ignore_changes  = [user_data]
-  #   }
 }
 
-# SSH key for Gateway instances
 resource "tls_private_key" "mesh_key" {
   algorithm = "RSA"
   rsa_bits  = 4096
@@ -62,8 +61,6 @@ resource "local_file" "sshPrivateKey" {
   filename        = "${path.module}/id_rsa"
   content         = tls_private_key.mesh_key.private_key_pem
 }
-
-## Outputs
 
 output "headscale_ip" {
   description = "IP address of the Headscale instance"

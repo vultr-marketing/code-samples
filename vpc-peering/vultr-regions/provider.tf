@@ -1,4 +1,3 @@
-## Provider
 terraform {
   required_providers {
     vultr = {
