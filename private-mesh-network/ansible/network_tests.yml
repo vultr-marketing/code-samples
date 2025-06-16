@@ -1,0 +1,260 @@
+---
+- name: Create test directories
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Create test result directory
+      file:
+        path: "Network_test_results"
+        state: directory
+
+- name: Gather all private IPs
+  hosts: tailscale_servers
+  gather_facts: true
+  tasks:
+    - name: Get private IP from enp8s0
+      shell: ip addr show enp8s0 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1
+      register: private_ip
+      changed_when: false
+
+    - name: Store private IP in hostvars
+      set_fact:
+        private_ip: "{{ private_ip.stdout }}"
+      delegate_to: localhost
+
+- name: Prepare and run gateway tests
+  hosts: tailscale_servers
+  gather_facts: true
+  serial: 1  # Run one server at a time
+  tasks:
+    - name: Get current server info
+      set_fact:
+        current_server: "{{ inventory_hostname }}"
+        current_region: "{{ inventory_hostname.split('-')[1] | default(inventory_hostname) | lower }}"
+
+    - name: Display test progress
+      debug:
+        msg: "Starting tests from server {{ current_server }} ({{ current_region }})"
+
+    - name: Create gateway test script
+      copy:
+        dest: "/home/{{ ansible_user }}/gateway_test.sh"
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          set -e  # Exit on error
+
+          # Get the current server's region from hostname
+          CURRENT_REGION=$(hostname | cut -d'-' -f2 | tr '[:upper:]' '[:lower:]')
+          OUTPUT_FILE="gateway_test_${CURRENT_REGION}.txt"
+
+          echo "Testing from ${CURRENT_REGION} to other gateways:" > "$OUTPUT_FILE"
+          echo "Gateway,IP_Type,Download,Upload,Latency" >> "$OUTPUT_FILE"
+
+          # Function to run a test with retries
+          run_test_with_retry() {
+              local command=$1
+              local test_type=$2
+              local max_retries=3
+              local retry=0
+              local result="0"
+              
+              echo "Running $test_type test..." >&2
+              while [ $retry -lt $max_retries ]; do
+                  if output=$($command 2>/dev/null); then
+                      result=$(echo "$output" | grep -A1 "sender" | grep -E "\[.*\]" | awk '{print $7}' | head -n1)
+                      if [ -n "$result" ] && [ "$result" != "0" ]; then
+                          echo "Success: $test_type = $result Mbps" >&2
+                          break
+                      else
+                          echo "Got zero or empty result for $test_type, retrying..." >&2
+                      fi
+                  else
+                      echo "Command failed for $test_type, retrying..." >&2
+                  fi
+                  retry=$((retry + 1))
+                  if [ $retry -lt $max_retries ]; then
+                      echo "Retry $retry/$max_retries for $test_type" >&2
+                      sleep 5  # Increased wait time between retries
+                  fi
+              done
+              
+              if [ "$result" = "0" ]; then
+                  echo "WARNING: All retries failed for $test_type, recording 0" >&2
+              fi
+              
+              echo "$result"
+          }
+
+          # Function to run ping test with retries
+          run_ping_with_retry() {
+              local ip=$1
+              local max_retries=3
+              local retry=0
+              local result="0"
+              
+              echo "Running ping test to $ip..." >&2
+              while [ $retry -lt $max_retries ]; do
+                  if ping_result=$(ping -c 10 -W 1 "$ip" 2>/dev/null); then
+                      result=$(echo "$ping_result" | grep "min/avg/max" | awk -F'/' '{print $5}')
+                      if [ -n "$result" ] && [ "$result" != "0" ]; then
+                          echo "Success: Latency = $result ms" >&2
+                          break
+                      else
+                          echo "Got zero or empty latency, retrying..." >&2
+                      fi
+                  else
+                      echo "Ping failed, retrying..." >&2
+                  fi
+                  retry=$((retry + 1))
+                  if [ $retry -lt $max_retries ]; then
+                      echo "Retry $retry/$max_retries for ping" >&2
+                      sleep 5  # Increased wait time between retries
+                  fi
+              done
+              
+              if [ "$result" = "0" ]; then
+                  echo "WARNING: All retries failed for ping, recording 0" >&2
+              fi
+              
+              echo "$result"
+          }
+
+          # Function to run a test and get metrics
+          run_test() {
+              local ip=$1
+              local type=$2
+              local gateway=$3
+              
+              echo -e "\n=== Testing $gateway ($type: $ip) ===" >&2
+              
+              # Latency test (ping 10 times)
+              local latency
+              latency=$(run_ping_with_retry "$ip")
+              
+              # Download test (reverse mode)
+              local down_speed
+              down_speed=$(run_test_with_retry "iperf3 -c $ip -f m -t 10 -R" "download")
+              
+              # Upload test
+              local up_speed
+              up_speed=$(run_test_with_retry "iperf3 -c $ip -f m -t 10" "upload")
+              
+              # Write results
+              echo "$gateway,$type,$down_speed,$up_speed,$latency" >> "$OUTPUT_FILE"
+              
+              # Log results
+              echo "Final results for $gateway ($type):" >&2
+              echo "  Download: $down_speed Mbps" >&2
+              echo "  Upload: $up_speed Mbps" >&2
+              echo "  Latency: $latency ms" >&2
+          }
+
+          # Read and process each line from the input file
+          while IFS= read -r line || [ -n "$line" ]; do
+              if [[ -n "$line" ]]; then
+                  # Split the line into gateway, public_ip, and private_ip
+                  read -r gateway public_ip private_ip <<< "$line"
+                  
+                  # Skip if this is the current gateway
+                  if [ "$gateway" != "$CURRENT_REGION" ]; then
+                      # Test public IP
+                      run_test "$public_ip" "public" "$gateway"
+                      
+                      # Test private IP
+                      run_test "$private_ip" "private" "$gateway"
+                  fi
+              fi
+          done < gateway_ips.txt
+
+          echo -e "\nTests completed. Results written to $OUTPUT_FILE" >&2
+
+    - name: Create gateway IP list
+      copy:
+        dest: "/home/{{ ansible_user }}/gateway_ips.txt"
+        content: |
+          {% for host in groups['tailscale_servers'] %}
+          {% set region = host.split('-')[1] | default(host) | lower %}
+          {{ region }} {{ hostvars[host]['ansible_host'] }} {{ hostvars[host]['private_ip'] }}
+          {% endfor %}
+
+    - name: Run gateway tests
+      shell: |
+        ./gateway_test.sh < gateway_ips.txt
+      args:
+        chdir: "/home/{{ ansible_user }}"
+      register: test_results
+
+    - name: Display test results
+      debug:
+        var: test_results.stdout_lines
+
+    - name: Copy test results back to control node
+      fetch:
+        src: "/home/{{ ansible_user }}/gateway_test_{{ current_region }}.txt"
+        dest: "Network_test_results/"
+        flat: yes
+      ignore_errors: yes
+
+    - name: Display completion message
+      debug:
+        msg: "Completed tests from server {{ current_server }} ({{ current_region }})"
+
+- name: Format and combine results
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Initialize test data
+      set_fact:
+        all_test_data: []
+
+    - name: Find all test result files
+      find:
+        paths: Network_test_results
+        patterns: "gateway_test_*.txt"
+      register: test_files
+
+    - name: Read test result files
+      slurp:
+        src: "{{ item.path }}"
+      loop: "{{ test_files.files }}"
+      register: file_contents
+
+    - name: Gather all lines from all files
+      set_fact:
+        all_lines: "{{ all_lines | default([]) + ((item.content | b64decode | split('\n')) | select('match', '^[a-z]+,(public|private),') | list | map('regex_replace', '^(.*)$', item.item.path ~ ':::\\1') | list) }}"
+      loop: "{{ file_contents.results }}"
+
+    - name: Parse test results
+      set_fact:
+        all_test_data: "{{ all_test_data | default([]) + [{'from': item.split(':::')[0] | basename | regex_replace('gateway_test_(.*)\\.txt', '\\1'), 'to': item.split(':::')[1].split(',')[0], 'type': item.split(':::')[1].split(',')[1], 'download': item.split(':::')[1].split(',')[2] | default('0') | float, 'upload': item.split(':::')[1].split(',')[3] | default('0') | float, 'latency': item.split(':::')[1].split(',')[4] | default('0') | float}] }}"
+      loop: "{{ all_lines }}"
+
+    - name: Create public results table
+      template:
+        src: templates/table_template.j2
+        dest: "Network_test_results/public_results_table.txt"
+      vars:
+        results: "{{ all_test_data | selectattr('type', 'equalto', 'public') | list }}"
+
+    - name: Create private results table
+      template:
+        src: templates/table_template.j2
+        dest: "Network_test_results/private_results_table.txt"
+      vars:
+        results: "{{ all_test_data | selectattr('type', 'equalto', 'private') | list }}"
+
+    - name: Create combined results
+      template:
+        src: templates/combined_results.j2
+        dest: "Network_test_results/network_results.txt"
+      vars:
+        public_results: "{{ all_test_data | selectattr('type', 'equalto', 'public') | list }}"
+        private_results: "{{ all_test_data | selectattr('type', 'equalto', 'private') | list }}"
+
+    - name: Cleanup temporary files
+      file:
+        path: "Network_test_results/gateway_test_{{ item }}.txt"
+        state: absent
+      loop: "{{ groups['tailscale_servers'] | map('regex_replace', '^.*-(.*)$', '\\1') | map('lower') | list }}"
+      delegate_to: localhost

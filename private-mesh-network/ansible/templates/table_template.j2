@@ -1,0 +1,5 @@
+| From | To  | Download (Mbps) | Upload (Mbps) | Latency (ms)|
+|------|-----|----------------|---------------|--------------|
+{% for result in results %}
+| {{ "%-4s"|format(result.from) }} | {{ "%-3s"|format(result.to) }} | {{ "%14.1f"|format(result.download) }} | {{ "%13.1f"|format(result.upload) }} | {{ "%12.3f"|format(result.latency) }} |
+{% endfor %} 

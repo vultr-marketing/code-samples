@@ -1,0 +1,190 @@
+---
+- name: Wait for all instances to be accessible
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Wait for SSH to be available
+      wait_for:
+        host: "{{ ansible_host }}"
+        port: 22
+        timeout: 300
+        delay: 10
+        connect_timeout: 5
+      register: wait_result
+      retries: 30
+      delay: 10
+      until: wait_result is success
+      delegate_to: localhost
+
+- name: Configure Headscale and Tailscale instances
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Wait for instances to be ready
+      wait_for:
+        host: "{{ ansible_host }}"
+        port: 22
+        timeout: 300
+      delegate_to: localhost
+
+- name: Generate preauth keys on Headscale
+  hosts: headscale_servers
+  tasks:
+
+    - name: Check if users exist in Headscale
+      shell: |
+        set -e
+        USERS=$(sudo headscale users list --output json)
+        if [ "$USERS" != "null" ] && [ -n "$USERS" ]; then
+          echo "$USERS" | jq -r '.[].name'
+        fi
+      register: existing_users
+      changed_when: false
+
+    - name: Debug existing users
+      debug:
+        var: existing_users.stdout_lines
+
+    - name: Create users in Headscale
+      shell: |
+        set -e
+        USERS=$(sudo headscale users list --output json)
+        if [ "$USERS" = "null" ] || ! echo "$USERS" | jq -e --arg name "{{ item }}" '.[] | select(.name == $name)' > /dev/null; then
+          echo "Creating user {{ item }}"
+          sudo headscale users create {{ item }}
+        else
+          echo "User {{ item }} already exists"
+        fi
+      loop: "{{ groups['tailscale_servers'] }}"
+      register: user_creation
+
+    - name: Wait for users to be created
+      pause:
+        seconds: 5
+
+    - name: Create preauth keys for each region
+      shell: |
+        set -e
+        echo "Creating preauth key for {{ item }}"
+        sudo headscale preauthkeys create --user {{ item }} --reusable --expiration 24h --output json > /tmp/{{ item }}_authkey.json
+        if [ ! -s /tmp/{{ item }}_authkey.json ]; then
+          echo 'Failed to generate preauth key'
+          exit 1
+        fi
+      loop: "{{ groups['tailscale_servers'] }}"
+      register: key_creation
+
+    - name: Verify preauth keys exist
+      shell: |
+        set -e
+        if [ ! -f "/tmp/{{ item }}_authkey.json" ]; then
+          echo "Preauth key file for {{ item }} does not exist"
+          exit 1
+        fi
+      loop: "{{ groups['tailscale_servers'] }}"
+      register: key_verify
+      failed_when: key_verify.rc != 0
+
+- name: Configure Tailscale instances
+  hosts: tailscale_servers
+  tasks:
+    - name: Check if Tailscale is inactive
+      shell: |
+        if sudo tailscale status | grep -q "Logged out"; then
+          echo "needs_configuration"
+        else
+          echo "already_configured"
+        fi
+      register: tailscale_status
+      changed_when: false
+
+    - name: Get preauth key
+      shell: |
+        set -e
+        ssh -i "{{ playbook_dir }}/../id_rsa" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null linuxuser@{{ hostvars['headscale']['ansible_host'] }} 'sudo cat /tmp/{{ region }}_authkey.json | jq -r .key'
+      register: auth_key
+      delegate_to: localhost
+      failed_when: auth_key.stdout == ""
+      when: tailscale_status.stdout == "needs_configuration"
+
+    - name: Get subnet information
+      shell: |
+        set -e
+        SUBNET=$(ip route | grep -i enp8s0 | awk '{print $1}')
+        if [ -z "$SUBNET" ]; then
+          echo 'Failed to get subnet'
+          exit 1
+        fi
+        echo $SUBNET
+      register: subnet_info
+      failed_when: subnet_info.stdout == ""
+      when: tailscale_status.stdout == "needs_configuration"
+
+    - name: Start Tailscale
+      shell: |
+        set -e
+        sudo tailscale up --login-server http://{{ hostvars['headscale']['ansible_host'] }}:8080 --authkey {{ auth_key.stdout }} --accept-routes --advertise-routes {{ subnet_info.stdout }}
+      register: tailscale_up
+      when: tailscale_status.stdout == "needs_configuration"
+
+    - name: Wait for Tailscale to be ready
+      wait_for:
+        host: "{{ ansible_host }}"
+        port: 22
+        timeout: 60
+      when: tailscale_up.changed
+
+    - name: Restart FRR if Tailscale was started
+      shell: |
+        set -e
+        sudo systemctl stop frr || true
+        sleep 5
+        sudo systemctl start frr
+        sleep 5
+        sudo systemctl status frr
+      when: tailscale_up.changed
+      register: frr_restart
+      retries: 3
+      delay: 10
+      until: frr_restart.rc == 0
+
+- name: Configure routing on Headscale
+  hosts: headscale_servers
+  tasks:
+    - name: Get current routes
+      shell: |
+        set -e
+        sudo headscale route list --output json
+      register: current_routes
+      changed_when: false
+
+    - name: Enable all routes
+      shell: |
+        set -e
+        ROUTES=$(sudo headscale route list --output json)
+        if [ -n "$ROUTES" ] && [ "$ROUTES" != "null" ]; then
+          # Get all route IDs
+          ALL_IDS=$(echo "$ROUTES" | jq -r '.[].id')
+          if [ -n "$ALL_IDS" ]; then
+            for i in $ALL_IDS; do
+              # Enable each route
+              sudo headscale route enable -r $i
+            done
+          fi
+        fi
+        sudo headscale route list
+      register: route_enable
+      changed_when: route_enable.stdout != ""
+
+- name: Update main routing table
+  hosts: tailscale_servers
+  tasks:
+    - name: Add routes to main table
+      shell: |
+        set -e
+        sudo ip route show table 52 | while read -r ROUTE; do
+          if [ -n "$ROUTE" ]; then
+            sudo ip route replace $ROUTE
+          fi
+        done
+      register: route_update 
