@@ -1,4 +1,6 @@
+# Vultr API Configuration
 vultr_api_key = "Your Vultr API Key"
+
 # Instance configuration
 instance_plan = "voc-c-2c-4gb-75s-amd"
 user_scheme   = "limited"

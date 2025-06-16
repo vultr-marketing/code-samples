@@ -5,7 +5,7 @@
   tasks:
     - name: Create test result directory
       file:
-        path: "Network_test_results"
+        path: "network_test_results"
         state: directory
 
 - name: Gather all private IPs
@@ -192,7 +192,7 @@
     - name: Copy test results back to control node
       fetch:
         src: "/home/{{ ansible_user }}/gateway_test_{{ current_region }}.txt"
-        dest: "Network_test_results/"
+        dest: "network_test_results/"
         flat: yes
       ignore_errors: yes
 
@@ -210,7 +210,7 @@
 
     - name: Find all test result files
       find:
-        paths: Network_test_results
+        paths: network_test_results
         patterns: "gateway_test_*.txt"
       register: test_files
 
@@ -233,28 +233,28 @@
     - name: Create public results table
       template:
         src: templates/table_template.j2
-        dest: "Network_test_results/public_results_table.txt"
+        dest: "network_test_results/public_results_table.txt"
       vars:
         results: "{{ all_test_data | selectattr('type', 'equalto', 'public') | list }}"
 
     - name: Create private results table
       template:
         src: templates/table_template.j2
-        dest: "Network_test_results/private_results_table.txt"
+        dest: "network_test_results/private_results_table.txt"
       vars:
         results: "{{ all_test_data | selectattr('type', 'equalto', 'private') | list }}"
 
     - name: Create combined results
       template:
         src: templates/combined_results.j2
-        dest: "Network_test_results/network_results.txt"
+        dest: "network_test_results/network_results.txt"
       vars:
         public_results: "{{ all_test_data | selectattr('type', 'equalto', 'public') | list }}"
         private_results: "{{ all_test_data | selectattr('type', 'equalto', 'private') | list }}"
 
     - name: Cleanup temporary files
       file:
-        path: "Network_test_results/gateway_test_{{ item }}.txt"
+        path: "network_test_results/gateway_test_{{ item }}.txt"
         state: absent
       loop: "{{ groups['tailscale_servers'] | map('regex_replace', '^.*-(.*)$', '\\1') | map('lower') | list }}"
       delegate_to: localhost
