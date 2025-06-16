@@ -1,5 +1,5 @@
 resource "vultr_startup_script" "clients" {
-  name   = "mesh-network-clients-init-script"
+  name   = "headscale-mesh-init-script"
   type   = "boot"
   script = base64encode(templatefile("${path.module}/script/client.sh", {}))
 }
