@@ -9,3 +9,9 @@ variable "api_token" {
   description = "The Okta API token, this will be read from environment variable (TF_VAR_api_token) for security"
   sensitive   = true
 }
+variable "admin_email" {
+  type = string
+}
+variable "restricted_email" {
+  type = string
+}

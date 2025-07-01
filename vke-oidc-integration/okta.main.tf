@@ -9,13 +9,6 @@ resource "okta_group" "k8s_restricted_users_group" {
   description = "Users who can only view pods and services in default namespace"
 }
 
-variable "admin_email" {
-  type = string
-}
-variable "restricted_email" {
-  type = string
-}
-
 # Assign users to the groups
 data "okta_user" "admin" {
   search {
