@@ -50,6 +50,7 @@ resource "okta_app_oauth" "k8s_oidc" {
   response_types = ["code"]
   redirect_uris = [
     "http://localhost:8000",
+    "http://localhost:18000"
   ]
   post_logout_redirect_uris = [
     "http://localhost:8000",
