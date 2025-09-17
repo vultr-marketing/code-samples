@@ -4,6 +4,7 @@ resource "vultr_vpc" "tailscale" {
   region         = each.value.region
   v4_subnet      = each.value.subnet
   v4_subnet_mask = each.value.subnet_mask
+  description    = "${each.value.region} VPC - Headscale Mesh Network"
 }
 
 # Control Server

@@ -55,9 +55,13 @@ install_packages() {
         fi
 
     else
-        # Debian-based
-        apt update -y
-        apt install -y net-tools wget curl gnupg lsb-release
+        # Debian-based - Set non-interactive mode
+        export DEBIAN_FRONTEND=noninteractive
+        export NEEDRESTART_MODE=a
+        export NEEDRESTART_SUSPEND=1
+        
+        apt-get update -y
+        apt-get install -y -qq net-tools wget curl gnupg lsb-release
 
         # Add FRR repository only if not added
         if ! grep -q "deb.frrouting.org" /etc/apt/sources.list.d/frr.list 2>/dev/null; then
@@ -65,16 +69,23 @@ install_packages() {
             echo "deb [signed-by=/usr/share/keyrings/frrouting.gpg] https://deb.frrouting.org/frr $(lsb_release -sc) frr-stable" | tee /etc/apt/sources.list.d/frr.list
         fi
 
-        apt update -y
-        apt install -y frr frr-pythontools iptables-persistent
+        apt-get update -y
+        # Pre-configure iptables-persistent to avoid prompts
+        echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
+        echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
+        apt-get install -y -qq frr frr-pythontools iptables-persistent
 
-        # Add iptables rule immediately
-        iptables -C INPUT -p ospf -j ACCEPT || iptables -A INPUT -p ospf -j ACCEPT
+        # Add iptables rule immediately (check if exists first)
+        if ! iptables -C INPUT -p ospf -j ACCEPT 2>/dev/null; then
+            iptables -A INPUT -p ospf -j ACCEPT
+        fi
 
         # Create script to ensure rule is applied on reboot
         cat << 'EOF' > /usr/local/bin/set-ospf-rule.sh
 #!/bin/bash
-iptables -C INPUT -p ospf -j ACCEPT || iptables -A INPUT -p ospf -j ACCEPT
+if ! iptables -C INPUT -p ospf -j ACCEPT 2>/dev/null; then
+    iptables -A INPUT -p ospf -j ACCEPT
+fi
 EOF
         chmod +x /usr/local/bin/set-ospf-rule.sh
 
