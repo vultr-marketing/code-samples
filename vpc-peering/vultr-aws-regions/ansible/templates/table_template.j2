@@ -1,0 +1,21 @@
+# Network Test Results - {{ 'Public' if results[0].type == 'public' else 'Private' }} Connections
+# Generated on {{ lookup("pipe", "date") }}
+
+{% if results %}
+| From | To | Download (Mbps) | Upload (Mbps) | Latency (ms) |
+|------|----|-----------------|---------------|--------------|
+{% for result in results %}
+| {{ result.from }} | {{ result.to }} | {{ "%.2f" | format(result.download) }} | {{ "%.2f" | format(result.upload) }} | {{ "%.2f" | format(result.latency) }} |
+{% endfor %}
+
+## Summary Statistics
+- **Total Tests**: {{ results | length }}
+- **Average Download**: {{ "%.2f" | format(results | map(attribute='download') | sum / results | length) }} Mbps
+- **Average Upload**: {{ "%.2f" | format(results | map(attribute='upload') | sum / results | length) }} Mbps
+- **Average Latency**: {{ "%.2f" | format(results | map(attribute='latency') | sum / results | length) }} ms
+- **Best Download**: {{ "%.2f" | format(results | map(attribute='download') | max) }} Mbps
+- **Best Upload**: {{ "%.2f" | format(results | map(attribute='upload') | max) }} Mbps
+- **Best Latency**: {{ "%.2f" | format(results | map(attribute='latency') | min) }} ms
+{% else %}
+No test results available.
+{% endif %} 

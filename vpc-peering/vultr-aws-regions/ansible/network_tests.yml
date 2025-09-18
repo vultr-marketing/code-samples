@@ -1,0 +1,321 @@
+---
+- name: Configure UFW firewall rules for network testing
+  hosts: tailscale_servers
+  become: true
+  tasks:
+    - name: Ensure UFW is installed
+      apt:
+        name: ufw
+        state: present
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Apply all UFW rules in batch
+      ufw:
+        rule: allow
+        port: "{{ item.port }}"
+        proto: "{{ item.proto }}"
+        state: enabled
+      loop:
+        - { port: '22', proto: 'tcp' }
+        - { port: '41641', proto: 'udp' }
+        - { port: '443', proto: 'tcp' }
+        - { port: '443', proto: 'udp' }
+        - { port: '5201', proto: 'tcp' }
+        - { port: '5201', proto: 'udp' }
+
+    - name: Reload UFW
+      ufw:
+        state: reloaded
+
+    - name: Display UFW status
+      shell: ufw status verbose
+      register: ufw_status
+      changed_when: false
+
+    - name: Show UFW status
+      debug:
+        msg: "{{ ufw_status.stdout_lines }}"
+
+- name: Install network testing tools
+  hosts: tailscale_servers
+  become: true
+  tasks:
+    - name: Install iperf3 and ping tools
+      apt:
+        name:
+          - iperf3
+          - iputils-ping
+          - jq
+        state: present
+        update_cache: no
+
+- name: Create test directories
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Create test result directory
+      file:
+        path: "network_test_results"
+        state: directory
+
+    - name: Clean previous test result files
+      file:
+        path: "network_test_results"
+        state: absent
+
+    - name: Recreate test result directory
+      file:
+        path: "network_test_results"
+        state: directory
+
+- name: Gather all private IPs
+  hosts: tailscale_servers
+  gather_facts: true
+  tasks:
+    - name: Get private IP from interface
+      shell: |
+        INTERFACE=$(ip route | grep default | awk '{print $5}' | head -1)
+        ip addr show $INTERFACE | grep 'inet ' | awk '{print $2}' | cut -d/ -f1
+      register: private_ip
+      changed_when: false
+
+    - name: Store private IP in hostvars
+      set_fact:
+        private_ip: "{{ private_ip.stdout }}"
+      delegate_to: localhost
+
+- name: Gather Tailscale IPs
+  hosts: tailscale_servers
+  gather_facts: false
+  tasks:
+    - name: Get Tailscale IP
+      shell: tailscale ip -4 | head -n1
+      register: ts_ip
+      changed_when: false
+
+    - name: Set Tailscale IP fact
+      set_fact:
+        tailscale_ip: "{{ ts_ip.stdout }}"
+
+- name: Start iperf3 servers on all nodes
+  hosts: tailscale_servers
+  become: true
+  tasks:
+    - name: Kill any existing iperf3 processes
+      shell: pkill iperf3 || true
+      ignore_errors: yes
+
+    - name: Start iperf3 server
+      shell: |
+        nohup iperf3 -s > /dev/null 2>&1 &
+        sleep 2
+        pgrep iperf3 || echo "iperf3 server failed to start"
+      ignore_errors: yes
+
+- name: Wait for all iperf3 servers to be ready
+  hosts: tailscale_servers
+  tasks:
+    - name: Wait for iperf3 server to be listening
+      wait_for:
+        port: 5201
+        timeout: 20
+      delegate_to: "{{ inventory_hostname }}"
+
+- name: Prepare and run full mesh network tests
+  hosts: tailscale_servers
+  gather_facts: true
+  serial: 1
+  tasks:
+    - name: Get current server info
+      set_fact:
+        current_server: "{{ inventory_hostname }}"
+
+    - name: Create gateway test script (JSON parsing, robust retries)
+      copy:
+        dest: "/home/{{ ansible_user }}/gateway_test.sh"
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          set -e
+          CURRENT_NAME="{{ inventory_hostname }}"
+          OUTPUT_FILE="gateway_test_${CURRENT_NAME}.txt"
+          echo "Testing from ${CURRENT_HOSTNAME} to other gateways:" > "$OUTPUT_FILE"
+          echo "Gateway,IP_Type,Download,Upload,Latency" >> "$OUTPUT_FILE"
+          run_iperf_json_with_retry() {
+              local ip=$1
+              local mode=$2   # down|up
+              local max_retries=3
+              local retry=0
+              local result="0"
+              local cmd=(iperf3 -c "$ip" -f m -t 4 -J)
+              if [ "$mode" = "down" ]; then cmd+=( -R ); fi
+              while [ $retry -lt $max_retries ]; do
+                  if output=$(timeout 15s "${cmd[@]}" 2>/dev/null); then
+                      if [ "$mode" = "down" ]; then
+                          # Prefer sum_received; fallback to sum
+                          result=$(echo "$output" | jq -r '((.end.sum_received.bits_per_second // .end.sum.bits_per_second // 0) / 1e6) | tostring' 2>/dev/null)
+                      else
+                          # Prefer sum_sent; fallback to sum
+                          result=$(echo "$output" | jq -r '((.end.sum_sent.bits_per_second // .end.sum.bits_per_second // 0) / 1e6) | tostring' 2>/dev/null)
+                      fi
+                      if echo "$result" | grep -Eq '^[0-9]+(\.[0-9]+)?$'; then
+                          break
+                      fi
+                  fi
+                  retry=$((retry + 1))
+                  [ $retry -lt $max_retries ] && sleep 2
+              done
+              echo "$result"
+          }
+          run_ping_with_retry() {
+              local ip=$1
+              local max_retries=3
+              local retry=0
+              local result="0"
+              while [ $retry -lt $max_retries ]; do
+                  if ping_result=$(ping -n -c 4 -w 5 "$ip" 2>/dev/null); then
+                      # Extract avg from rtt min/avg/max/mdev = a/b/c/d ms
+                      result=$(echo "$ping_result" | awk -F'/' '/min\/avg/{print $(NF-1)}')
+                      [ -n "$result" ] && break
+                  fi
+                  retry=$((retry + 1))
+                  [ $retry -lt $max_retries ] && sleep 2
+              done
+              echo "${result:-0}"
+          }
+          run_test() {
+              local ip=$1
+              local type=$2
+              local gateway=$3
+              echo -e "\n=== Testing $gateway ($type: $ip) ===" >&2
+              local latency
+              latency=$(run_ping_with_retry "$ip")
+              local down_speed
+              down_speed=$(run_iperf_json_with_retry "$ip" down)
+              local up_speed
+              up_speed=$(run_iperf_json_with_retry "$ip" up)
+              echo "$gateway,$type,$down_speed,$up_speed,$latency" >> "$OUTPUT_FILE"
+              echo "Final results for $gateway ($type):" >&2
+              echo "  Download: $down_speed Mbps" >&2
+              echo "  Upload: $up_speed Mbps" >&2
+              echo "  Latency: $latency ms" >&2
+          }
+          # Pre-check reachability of TCP/5201 to reduce false zeros
+          can_reach_iperf() {
+              local ip=$1
+              timeout 3 bash -lc "</dev/tcp/$ip/5201" >/dev/null 2>&1 || return 1
+          }
+          # Note: run tests sequentially for reliability (iperf3 server handles one client at a time)
+          
+          # Run tests sequentially (only if TCP/5201 reachable)
+          while IFS= read -r line || [ -n "$line" ]; do
+              if [[ -n "$line" ]]; then
+                  read -r gateway public_ip tailscale_ip <<< "$line"
+                  if [ "$gateway" != "$CURRENT_NAME" ]; then
+                      if can_reach_iperf "$public_ip"; then
+                        run_test "$public_ip" "public" "$gateway"
+                      else
+                        echo "$gateway,public,0,0,0" >> "$OUTPUT_FILE"
+                      fi
+                      if [ -n "$tailscale_ip" ]; then
+                          if can_reach_iperf "$tailscale_ip"; then
+                            run_test "$tailscale_ip" "private" "$gateway"
+                          else
+                            echo "$gateway,private,0,0,0" >> "$OUTPUT_FILE"
+                          fi
+                      fi
+                  fi
+              fi
+          done < gateway_ips.txt
+          echo -e "\nTests completed. Results written to $OUTPUT_FILE" >&2
+
+    - name: Create gateway IP list (full mesh)
+      copy:
+        dest: "/home/{{ ansible_user }}/gateway_ips.txt"
+        content: |
+          {% for dst in groups['tailscale_servers'] %}
+          {{ dst }} {{ hostvars[dst]['ansible_host'] }} {{ hostvars[dst]['tailscale_ip'] | default('') }}
+          {% endfor %}
+
+    - name: Run gateway tests
+      shell: |
+        ./gateway_test.sh < gateway_ips.txt
+      args:
+        chdir: "/home/{{ ansible_user }}"
+      register: test_results
+      ignore_errors: yes
+
+    - name: Copy test results back to control node
+      synchronize:
+        src: "/home/{{ ansible_user }}/gateway_test_*.txt"
+        dest: "network_test_results/"
+        mode: pull
+      ignore_errors: yes
+
+    - name: Display completion message
+      debug:
+        msg: "Completed tests from server {{ current_server }}"
+
+- name: Format and combine results
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Initialize test data
+      set_fact:
+        all_test_data: []
+
+    - name: Find all test result files
+      find:
+        paths: network_test_results
+        patterns: "gateway_test_*.txt"
+      register: test_files
+
+    - name: Read test result files
+      slurp:
+        src: "{{ item.path }}"
+      loop: "{{ test_files.files }}"
+      register: file_contents
+
+    - name: Gather all lines from all files
+      set_fact:
+        all_lines: "{{ all_lines | default([]) + ((item.content | b64decode | split('\n')) | select('match', '^[a-zA-Z0-9-]+,(public|private),') | list | map('regex_replace', '^(.*)$', item.item.path ~ ':::\\1') | list) }}"
+      loop: "{{ file_contents.results }}"
+
+    - name: Parse test results
+      set_fact:
+        all_test_data: "{{ all_test_data | default([]) + [{'from': item.split(':::')[0] | basename | regex_replace('gateway_test_(.*)\\.txt', '\\1'), 'to': item.split(':::')[1].split(',')[0], 'type': item.split(':::')[1].split(',')[1], 'download': item.split(':::')[1].split(',')[2] | default('0') | float, 'upload': item.split(':::')[1].split(',')[3] | default('0') | float, 'latency': item.split(':::')[1].split(',')[4] | default('0') | float}] }}"
+      loop: "{{ all_lines | default([]) }}"
+      when: all_lines | length > 0
+
+    - name: Create public results table
+      template:
+        src: templates/table_template.j2
+        dest: "network_test_results/public_results_table.txt"
+      vars:
+        results: "{{ all_test_data | selectattr('type', 'equalto', 'public') | list }}"
+      when: all_test_data | length > 0
+
+    - name: Create private results table
+      template:
+        src: templates/table_template.j2
+        dest: "network_test_results/private_results_table.txt"
+      vars:
+        results: "{{ all_test_data | selectattr('type', 'equalto', 'private') | list }}"
+      when: all_test_data | length > 0
+
+    - name: Create combined results
+      template:
+        src: templates/combined_results.j2
+        dest: "network_test_results/network_results.txt"
+      vars:
+        public_results: "{{ all_test_data | selectattr('type', 'equalto', 'public') | list }}"
+        private_results: "{{ all_test_data | selectattr('type', 'equalto', 'private') | list }}"
+      when: all_test_data | length > 0
+
+    - name: Cleanup temporary files
+      file:
+        path: "network_test_results/gateway_test_{{ item }}.txt"
+        state: absent
+      loop: "{{ groups['tailscale_servers'] }}"
+      delegate_to: localhost
