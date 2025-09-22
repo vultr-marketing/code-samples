@@ -1,0 +1,65 @@
+# Network Performance Test Results
+# Generated on {{ lookup("pipe", "date") }}
+
+## Test Overview
+This report contains network performance metrics between gateway nodes in your VPC peering setup.
+
+## Public Network Performance
+{% if public_results %}
+| From | To | Download (Mbps) | Upload (Mbps) | Latency (ms) |
+|------|----|-----------------|---------------|--------------|
+{% for result in public_results %}
+| {{ result.from }} | {{ result.to }} | {{ "%.2f" | format(result.download) }} | {{ "%.2f" | format(result.upload) }} | {{ "%.2f" | format(result.latency) }} |
+{% endfor %}
+
+### Public Network Summary
+- **Total Tests**: {{ public_results | length }}
+- **Average Download**: {{ "%.2f" | format(public_results | map(attribute='download') | sum / public_results | length) }} Mbps
+- **Average Upload**: {{ "%.2f" | format(public_results | map(attribute='upload') | sum / public_results | length) }} Mbps
+- **Average Latency**: {{ "%.2f" | format(public_results | map(attribute='latency') | sum / public_results | length) }} ms
+{% else %}
+No public network test results available.
+{% endif %}
+
+## Private Network Performance (Tailscale)
+{% if private_results %}
+| From | To | Download (Mbps) | Upload (Mbps) | Latency (ms) |
+|------|----|-----------------|---------------|--------------|
+{% for result in private_results %}
+| {{ result.from }} | {{ result.to }} | {{ "%.2f" | format(result.download) }} | {{ "%.2f" | format(result.upload) }} | {{ "%.2f" | format(result.latency) }} |
+{% endfor %}
+
+### Private Network Summary
+- **Total Tests**: {{ private_results | length }}
+- **Average Download**: {{ "%.2f" | format(private_results | map(attribute='download') | sum / private_results | length) }} Mbps
+- **Average Upload**: {{ "%.2f" | format(private_results | map(attribute='upload') | sum / private_results | length) }} Mbps
+- **Average Latency**: {{ "%.2f" | format(private_results | map(attribute='latency') | sum / private_results | length) }} ms
+{% else %}
+No private network test results available.
+{% endif %}
+
+## Performance Comparison
+{% if public_results and private_results %}
+### Public vs Private Network Performance
+- **Public Network Tests**: {{ public_results | length }}
+- **Private Network Tests**: {{ private_results | length }}
+
+### Average Performance Comparison
+| Metric | Public Network | Private Network | Difference |
+|--------|----------------|-----------------|------------|
+| Download Speed | {{ "%.2f" | format(public_results | map(attribute='download') | sum / public_results | length) }} Mbps | {{ "%.2f" | format(private_results | map(attribute='download') | sum / private_results | length) }} Mbps | {{ "%.2f" | format((private_results | map(attribute='download') | sum / private_results | length) - (public_results | map(attribute='download') | sum / public_results | length)) }} Mbps |
+| Upload Speed | {{ "%.2f" | format(public_results | map(attribute='upload') | sum / public_results | length) }} Mbps | {{ "%.2f" | format(private_results | map(attribute='upload') | sum / private_results | length) }} Mbps | {{ "%.2f" | format((private_results | map(attribute='upload') | sum / private_results | length) - (public_results | map(attribute='upload') | sum / public_results | length)) }} Mbps |
+| Latency | {{ "%.2f" | format(public_results | map(attribute='latency') | sum / public_results | length) }} ms | {{ "%.2f" | format(private_results | map(attribute='latency') | sum / private_results | length) }} ms | {{ "%.2f" | format((public_results | map(attribute='latency') | sum / public_results | length) - (private_results | map(attribute='latency') | sum / private_results | length)) }} ms |
+{% endif %}
+
+## Test Configuration
+- **Test Duration**: 10 seconds per test
+- **Retry Attempts**: 3 per test
+- **Ping Count**: 10 pings per latency test
+- **Test Type**: Both upload and download (reverse mode)
+- **Units**: Mbps for bandwidth, ms for latency
+
+## Notes
+- Positive differences in performance comparison indicate better performance in the second column
+- Latency differences show improvement (lower is better)
+- Bandwidth differences show improvement (higher is better) 
