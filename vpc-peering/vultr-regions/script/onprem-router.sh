@@ -14,7 +14,7 @@ wait_for_apt() {
   while fuser /var/lib/dpkg/lock >/dev/null 2>&1 || \
         fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
         fuser /var/cache/apt/archives/lock >/dev/null 2>&1; do
-    echo "🔒 Waiting for other apt/dpkg processes to finish..."
+    echo "Waiting for other apt/dpkg processes to finish..."
     sleep 5
   done
 }
@@ -28,10 +28,10 @@ apt-get install -y net-tools iperf3 wget curl gnupg lsb-release apt-transport-ht
 systemctl enable --now iperf3 || true
 
 if ! command -v tailscale >/dev/null 2>&1; then
-  echo "🌀 Installing Tailscale..."
+  echo "Installing Tailscale..."
   wait_for_apt
   curl -fsSL https://tailscale.com/install.sh | sh || {
-    echo "⚠️ Retrying Tailscale installation..."
+    echo "Retrying Tailscale installation..."
     sleep 10
     wait_for_apt
     curl -fsSL https://tailscale.com/install.sh | sh
@@ -79,7 +79,7 @@ else
     SUBNET_CIDR=$(awk '{print $1}' <<< "$FALLBACK_INFO")
     INTERFACE=$(awk '{print $2}' <<< "$FALLBACK_INFO")
   else
-    echo "❌ Could not detect any IPv4 interface with a valid address." >&2
+    echo "Could not detect any IPv4 interface with a valid address." >&2
     exit 1
   fi
 fi
@@ -129,7 +129,7 @@ chmod +x /usr/local/bin/set-ospf-rule.sh
 (crontab -l 2>/dev/null; echo "@reboot /usr/local/bin/set-ospf-rule.sh") | crontab -
 
 echo
-echo "✅ Setup complete for region: ${REGION}"
+echo "Setup complete for region: ${REGION}"
 echo "Detected Interface: ${INTERFACE}"
 echo "Detected Subnet: ${SUBNET}"
 echo
