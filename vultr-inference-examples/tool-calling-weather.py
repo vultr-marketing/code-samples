@@ -8,10 +8,6 @@ OpenAI-compatible API to perform tool calling with the kimi-k2-instruct model.
 
 It defines a get_weather() function that fetches real-time weather data
 from the free Open-Meteo API using city coordinates from Nominatim (OpenStreetMap).
-
-Requirements:
-  pip install requests python-dotenv
-  export VULTR_INFERENCE_API_KEY=your_vultr_key
 """
 
 import os
