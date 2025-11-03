@@ -48,7 +48,7 @@ def get_coordinates(city: str):
         lon = float(data[0]["lon"])
         return lat, lon
     except Exception as e:
-        print(f"⚠️ Geocoding error: {e}")
+        print(f"Geocoding error: {e}")
         return None, None
 
 def get_weather(city: str):
