@@ -1,0 +1,41 @@
+---
+- name: Create suse-ai namespace
+  command: kubectl create namespace {{ suse_ai_namespace }}
+  register: ns_create
+  failed_when: ns_create.rc != 0 and 'AlreadyExists' not in ns_create.stderr
+  changed_when: ns_create.rc == 0
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+- name: Application Collection pull secret
+  shell: |
+    kubectl create secret docker-registry application-collection \
+      --docker-server=dp.apps.rancher.io \
+      --docker-username={{ appco_username }} \
+      --docker-password={{ appco_user_token }} \
+      -n {{ suse_ai_namespace }} \
+      --dry-run=client -o yaml | kubectl apply -f -
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  no_log: true
+
+- name: SUSE Registry pull secret
+  shell: |
+    kubectl create secret docker-registry suse-ai-registry \
+      --docker-server=registry.suse.com \
+      --docker-username=regcode \
+      --docker-password={{ scc_reg_code }} \
+      -n {{ suse_ai_namespace }} \
+      --dry-run=client -o yaml | kubectl apply -f -
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  no_log: true
+
+- name: Patch default service account
+  command: >
+    kubectl patch serviceaccount default -n {{ suse_ai_namespace }}
+    -p '{"imagePullSecrets":[{"name":"application-collection"}]}'
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  register: sa_patch
+  changed_when: "'patched' in sa_patch.stdout"

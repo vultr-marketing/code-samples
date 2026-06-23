@@ -1,0 +1,153 @@
+---
+# Run order matters; inventory flags toggle optional roles.
+
+- name: Wait for host SSH to become reachable
+  hosts: suse_ai
+  gather_facts: false
+  become: false
+  tasks:
+    # GPU bare-metal boots slowly; poll the connection before any task runs.
+    - name: Wait for SSH connectivity (up to 20 min)
+      wait_for_connection:
+        timeout: 1200
+        sleep: 15
+
+- name: Phase 1 — Host prep + Kubernetes base
+  hosts: suse_ai
+  become: true
+  gather_facts: true
+  any_errors_fatal: true
+  roles:
+    - 01-system-prep
+    - 02-nvidia-drivers
+    - 03-rke2
+    - 04-helm
+    - 05-registries
+    - 06-cert-manager
+
+- name: Phase 2 — Rancher, Storage, Observability
+  hosts: suse_ai
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - 07-rancher
+    - 08-suse-storage
+    - role: 10-observability
+      when: deploy_observability | bool
+    - role: 10b-observability-agent
+      when: deploy_observability | bool and service_token is defined and service_token != ""
+
+- name: Phase 3 — GPU + AI workloads
+  hosts: suse_ai
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - 11-suse-ai-namespace
+    - role: 12-gpu-operator
+      when: deploy_gpu_operator | bool
+    - 13-vector-db
+    - 14-ollama
+    - 15-open-webui
+    - role: 16-vllm
+      when: deploy_vllm | bool
+    # NeuVector last — UI-only install, optional human-in-loop step
+    - 09-suse-security
+
+- name: Final deployment summary
+  hosts: suse_ai
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Check pods that are not Running or Completed
+      shell: |
+        kubectl get pods -A --no-headers | grep -v -E 'Running|Completed' || true
+      environment:
+        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+      register: bad_pods
+      changed_when: false
+      failed_when: bad_pods.stdout != ""
+      tags: [verify]
+
+    - name: Fetch Rancher bootstrap password
+      shell: |
+        kubectl get secret -n cattle-system bootstrap-secret \
+          -o go-template='{{ '{{' }} .data.bootstrapPassword|base64decode {{ '}}' }}' 2>/dev/null \
+          || echo "admin"
+      environment:
+        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+      register: rancher_pw
+      changed_when: false
+      tags: [summary]
+
+    - name: Check if NeuVector is installed
+      shell: |
+        kubectl get secret -n {{ neuvector_namespace }} neuvector-bootstrap-secret \
+          -o go-template='{{ '{{' }} .data.bootstrapPassword|base64decode {{ '}}' }}' 2>/dev/null
+      environment:
+        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+      register: neuvector_pw
+      changed_when: false
+      failed_when: false
+      tags: [summary]
+
+    - name: Read observability admin password from file
+      slurp:
+        src: /root/observability_password.txt
+      register: obs_pw_file
+      failed_when: false
+      tags: [summary]
+
+    - name: Capture GPU allocatable count
+      shell: |
+        kubectl get nodes -o jsonpath='{range .items[*]}{.status.allocatable.nvidia\.com/gpu}{"\n"}{end}' \
+          | grep -v '^$' | head -1
+      environment:
+        KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+      register: gpu_alloc
+      changed_when: false
+      failed_when: false
+      tags: [summary]
+
+    - name: Print deployment summary
+      vars:
+        observability_admin_password: >-
+          {{
+            (obs_pw_file.content | b64decode | regex_search('admin password is:\s*(\S+)', '\1') | first)
+            if (obs_pw_file.content is defined and (obs_pw_file.content | b64decode | regex_search('admin password is:\s*(\S+)', '\1')))
+            else 'see /root/observability_password.txt'
+          }}
+        summary_lines: >-
+          {{
+            [
+              '============================================================',
+              'SUSE AI DEPLOYMENT COMPLETE',
+              '============================================================',
+              '',
+              'ACCESS URLS',
+              '-----------',
+              'Rancher Prime : https://' ~ rancher_hostname,
+              'Open WebUI    : https://' ~ webui_hostname,
+            ]
+            + (['Observability : https://' ~ observability_hostname] if deploy_observability | bool else [])
+            + [
+              '',
+              'CREDENTIALS',
+              '-----------',
+              'Rancher admin       : admin / ' ~ rancher_pw.stdout,
+            ]
+            + (['Observability admin : admin / ' ~ observability_admin_password] if deploy_observability | bool else [])
+            + (['NeuVector admin     : admin / ' ~ neuvector_pw.stdout] if neuvector_pw.stdout | length > 0 else [])
+            + [
+              '',
+              'GPU',
+              '---',
+              'NVIDIA GPUs allocatable : ' ~ ((gpu_alloc.stdout | default('') | length > 0) | ternary(gpu_alloc.stdout, 'n/a')),
+              'Default model           : ' ~ ollama_default_model,
+              '============================================================',
+            ]
+          }}
+      debug:
+        msg: "{{ summary_lines }}"
+      tags: [summary]

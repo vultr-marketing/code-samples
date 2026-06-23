@@ -1,0 +1,46 @@
+---
+# Uses public vllm/vllm-openai (x86_64) — SUSE AppCo image is arm64-only at v0.13.0.
+
+- name: Render vLLM values
+  copy:
+    dest: /root/vllm_values.yaml
+    mode: "0600"
+    content: |
+      servingEngineSpec:
+        # RKE2 doesn't default to the nvidia runtime; without this, GPU devices never mount.
+        runtimeClassName: nvidia
+        modelSpec:
+          - name: "llama3"
+            registry: "{{ vllm_image_registry }}"
+            repository: "{{ vllm_image_repository }}"
+            tag: "{{ vllm_image_tag }}"
+            imagePullPolicy: "IfNotPresent"
+            modelURL: "{{ vllm_model }}"
+            replicaCount: 1
+            requestCPU: 10
+            requestMemory: "16Gi"
+            requestGPU: 1
+            storageClass: longhorn
+            pvcStorage: "{{ vllm_pvc_size }}"
+            pvcAccessMode:
+              - ReadWriteOnce
+            vllmConfig:
+              enableChunkedPrefill: false
+              enablePrefixCaching: false
+              maxModelLen: 4096
+              dtype: "bfloat16"
+              extraArgs: ["--gpu-memory-utilization", "0.8"]
+            hf_token: "{{ hf_token }}"
+      routerSpec:
+        imagePullSecrets:
+          - name: application-collection
+
+- name: Install vLLM
+  shell: |
+    helm upgrade --install vllm \
+      oci://dp.apps.rancher.io/charts/vllm \
+      -n {{ suse_ai_namespace }} \
+      -f /root/vllm_values.yaml \
+      --wait --timeout 20m
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml

@@ -1,0 +1,86 @@
+---
+# envvar device strategy: SUSE doc's volume-mounts+CDI combo broke library injection on driver 580.
+
+- name: Verify GPU driver loaded
+  command: nvidia-smi
+  changed_when: false
+
+- name: Write GPU Operator HelmChart manifest
+  copy:
+    dest: /var/lib/rancher/rke2/server/manifests/gpu-operator.yaml
+    mode: "0600"
+    content: |
+      apiVersion: helm.cattle.io/v1
+      kind: HelmChart
+      metadata:
+        name: gpu-operator
+        namespace: kube-system
+      spec:
+        chart: gpu-operator
+        repo: https://helm.ngc.nvidia.com/nvidia
+        version: "{{ gpu_operator_version }}"
+        targetNamespace: gpu-operator
+        createNamespace: true
+        valuesContent: |-
+          driver:
+            enabled: "false"
+          toolkit:
+            enabled: true
+            env:
+              - name: CONTAINERD_CONFIG
+                value: /var/lib/rancher/rke2/agent/etc/containerd/config.toml
+              - name: CONTAINERD_SOCKET
+                value: /run/k3s/containerd/containerd.sock
+              - name: CONTAINERD_RUNTIME_CLASS
+                value: nvidia
+              - name: CONTAINERD_SET_AS_DEFAULT
+                value: "true"
+          devicePlugin:
+            env:
+              - name: PASS_DEVICE_SPECS
+                value: "true"
+              - name: DEVICE_LIST_STRATEGY
+                value: envvar
+              - name: DEVICE_ID_STRATEGY
+                value: uuid
+          cdi:
+            enabled: false
+
+- name: Wait for GPU Operator pods
+  shell: |
+    kubectl -n gpu-operator wait --for=condition=ready pod \
+      -l app=nvidia-device-plugin-daemonset --timeout=600s
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  retries: 5
+  delay: 30
+  register: dp_wait
+  until: dp_wait.rc == 0
+  changed_when: false
+
+- name: Discover GPU node name
+  command: kubectl get nodes -o jsonpath='{.items[0].metadata.name}'
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  register: gpu_node
+  changed_when: false
+
+- name: Label GPU node
+  command: kubectl label node {{ gpu_node.stdout }} accelerator=nvidia-gpu --overwrite
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  changed_when: false
+
+- name: Capture GPU count
+  command: kubectl get node {{ gpu_node.stdout }} -o jsonpath='{.status.allocatable.nvidia\.com/gpu}'
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  register: gpu_count
+  retries: 12
+  delay: 10
+  until: gpu_count.stdout | int > 0
+  changed_when: false
+
+- name: Set gpu_count fact
+  set_fact:
+    gpu_allocatable: "{{ gpu_count.stdout }}"

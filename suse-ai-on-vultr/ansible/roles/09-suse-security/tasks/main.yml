@@ -1,0 +1,36 @@
+---
+# NeuVector installs via Rancher UI only; see site.yml summary for instructions.
+
+# On-demand: ansible-playbook site.yml --tags neuvector_ingress
+- name: Expose the NeuVector UI over HTTPS
+  shell: |
+    cat <<EOF | kubectl apply -f -
+    apiVersion: networking.k8s.io/v1
+    kind: Ingress
+    metadata:
+      name: neuvector-webui
+      namespace: {{ neuvector_namespace }}
+      annotations:
+        cert-manager.io/cluster-issuer: letsencrypt-prod
+        nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+    spec:
+      ingressClassName: nginx
+      tls:
+        - hosts:
+            - {{ neuvector_hostname }}
+          secretName: neuvector-tls
+      rules:
+        - host: {{ neuvector_hostname }}
+          http:
+            paths:
+              - path: /
+                pathType: Prefix
+                backend:
+                  service:
+                    name: neuvector-service-webui
+                    port:
+                      number: 8443
+    EOF
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  tags: [neuvector_ingress, never]

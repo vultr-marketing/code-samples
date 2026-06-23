@@ -1,0 +1,64 @@
+---
+- name: Create cert-manager namespace
+  command: kubectl create namespace cert-manager
+  register: ns_create
+  failed_when: ns_create.rc != 0 and 'AlreadyExists' not in ns_create.stderr
+  changed_when: ns_create.rc == 0
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+- name: Create application-collection pull secret in cert-manager
+  shell: |
+    kubectl create secret docker-registry application-collection \
+      --docker-server=dp.apps.rancher.io \
+      --docker-username={{ appco_username }} \
+      --docker-password={{ appco_user_token }} \
+      -n cert-manager \
+      --dry-run=client -o yaml | kubectl apply -f -
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  no_log: true
+
+- name: Install cert-manager from Application Collection
+  shell: |
+    helm upgrade --install cert-manager \
+      oci://dp.apps.rancher.io/charts/cert-manager \
+      -n cert-manager \
+      --set crds.enabled=true \
+      --set 'global.imagePullSecrets[0].name'=application-collection \
+      --wait --timeout 5m
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+- name: Wait for cert-manager webhook
+  command: kubectl -n cert-manager rollout status deploy/cert-manager-webhook --timeout=180s
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  changed_when: false
+
+- name: Create letsencrypt-prod ClusterIssuer
+  copy:
+    dest: /root/letsencrypt-clusterissuer.yaml
+    mode: "0644"
+    content: |
+      apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      metadata:
+        name: letsencrypt-prod
+      spec:
+        acme:
+          server: https://acme-v02.api.letsencrypt.org/directory
+          email: {{ le_email | default(appco_username) }}
+          privateKeySecretRef:
+            name: letsencrypt-prod-key
+          solvers:
+            - http01:
+                ingress:
+                  class: nginx
+
+- name: Apply ClusterIssuer
+  command: kubectl apply -f /root/letsencrypt-clusterissuer.yaml
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  register: ci_apply
+  changed_when: "'configured' in ci_apply.stdout or 'created' in ci_apply.stdout"

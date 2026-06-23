@@ -1,0 +1,53 @@
+---
+- name: Detect existing nvidia driver
+  command: nvidia-smi
+  register: nvidia_smi_check
+  failed_when: false
+  changed_when: false
+
+- name: Install / verify NVIDIA driver
+  when: nvidia_smi_check.rc != 0 or (force_driver_install | default(false) | bool)
+  block:
+    - name: Purge stale nvidia packages
+      apt:
+        name:
+          - "nvidia-*"
+          - "libnvidia-*"
+        state: absent
+        purge: true
+      failed_when: false
+
+    - name: Install software-properties-common
+      apt:
+        name: software-properties-common
+        state: present
+
+    - name: Add graphics-drivers PPA
+      apt_repository:
+        repo: ppa:graphics-drivers/ppa
+        state: present
+        update_cache: true
+
+    - name: Install NVIDIA driver
+      apt:
+        name: "{{ nvidia_driver_package }}"
+        state: present
+      register: driver_install
+
+    - name: Reboot if driver freshly installed
+      reboot:
+        reboot_timeout: 600
+        msg: "Rebooting after NVIDIA driver install"
+      when: driver_install.changed
+
+    - name: Wait for nvidia-smi to return GPUs
+      command: nvidia-smi
+      register: nvidia_smi
+      retries: 10
+      delay: 10
+      until: nvidia_smi.rc == 0
+      changed_when: false
+
+- name: Confirm GPU visible
+  command: nvidia-smi
+  changed_when: false

@@ -1,0 +1,38 @@
+---
+- name: Render OpenSearch values
+  copy:
+    dest: /root/opensearch_values.yaml
+    mode: "0644"
+    content: |
+      global:
+        imagePullSecrets:
+          - application-collection
+      singleNode: true
+      replicas: 1
+      persistence:
+        enabled: true
+        storageClass: longhorn
+      extraEnvs:
+        - name: OPENSEARCH_INITIAL_ADMIN_PASSWORD
+          value: "{{ opensearch_admin_password }}"
+      service:
+        type: ClusterIP
+        httpPort: 9200
+        transportPort: 9300
+      resources:
+        limits:
+          memory: "6Gi"
+          cpu: "2"
+      config:
+        opensearch.yml: |
+          plugins.security.disabled: true
+
+- name: Install OpenSearch
+  shell: |
+    helm upgrade --install opensearch \
+      oci://dp.apps.rancher.io/charts/opensearch \
+      -n {{ suse_ai_namespace }} \
+      -f /root/opensearch_values.yaml \
+      --wait --timeout 10m
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml

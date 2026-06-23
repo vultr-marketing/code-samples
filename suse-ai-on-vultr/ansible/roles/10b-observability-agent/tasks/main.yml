@@ -1,0 +1,43 @@
+---
+# Requires -e service_token=svctok-... from the Observability UI (StackPacks > K8s).
+# Patches node-agent off port 5555 — collides with NVIDIA DCGM on GPU nodes.
+
+- name: Bail if service token missing
+  fail:
+    msg: "Set service_token before running this role (StackPacks → Kubernetes / OpenShift)"
+  when: service_token is not defined or service_token == ""
+
+- name: Install observability agent
+  shell: |
+    helm upgrade --install \
+      --namespace suse-observability \
+      --set-string 'stackstate.apiKey'={{ service_token }} \
+      --set-string 'stackstate.cluster.name'={{ cluster_name }} \
+      --set-string 'stackstate.url'='https://{{ observability_hostname }}/receiver/stsAgent' \
+      suse-observability-agent suse-observability/suse-observability-agent \
+      --wait --timeout 5m
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+- name: Set node-agent health port to 5556
+  command: >
+    kubectl set env ds/suse-observability-agent-node-agent
+    -n suse-observability -c node-agent STS_HEALTH_PORT=5556
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  changed_when: false
+
+- name: Patch DaemonSet container/host port to 5556
+  shell: |
+    kubectl patch ds -n suse-observability suse-observability-agent-node-agent --type=json -p='[
+      {"op":"replace","path":"/spec/template/spec/containers/0/ports/1/containerPort","value":5556},
+      {"op":"replace","path":"/spec/template/spec/containers/0/ports/1/hostPort","value":5556}
+    ]'
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+- name: Rollout restart agent DaemonSet
+  command: kubectl rollout restart ds -n suse-observability suse-observability-agent-node-agent
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  changed_when: false

@@ -1,0 +1,36 @@
+---
+# Shared variables (non-secret defaults). Secrets come from inventory written by Terraform.
+
+# --- Versions ---
+rke2_channel: "v1.34"
+gpu_operator_version: "v25.3.4"
+suse_storage_version: "1.11.2"
+nvidia_driver_package: "nvidia-driver-550"
+
+# --- Cluster ---
+suse_ai_namespace: "suse-ai"
+cluster_name: "suse-ai"
+
+# --- AI Library ---
+ollama_default_model: "gemma:2b"
+ollama_pvc_size: "50Gi"
+opensearch_admin_password: "MySecurePass123"
+
+# --- vLLM ---
+vllm_model: "meta-llama/Llama-3.1-8B-Instruct"
+vllm_image_registry: "docker.io"
+vllm_image_repository: "vllm/vllm-openai"
+vllm_image_tag: "v0.20.0"
+vllm_pvc_size: "50Gi"
+
+# --- Open WebUI ---
+webui_hostname: "webui.{{ node_ip }}.sslip.io"
+rancher_hostname: "rancher-prime.{{ node_ip }}.sslip.io"
+observability_hostname: "observability.{{ node_ip }}.sslip.io"
+neuvector_hostname: "neuvector.{{ node_ip }}.sslip.io"
+neuvector_namespace: "cattle-neuvector-system"
+
+# --- sysctl ---
+inotify_max_user_instances: 8192
+inotify_max_user_watches: 1048576
+file_max: 2097152

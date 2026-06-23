@@ -1,0 +1,68 @@
+---
+- name: Update apt cache and upgrade packages
+  apt:
+    update_cache: true
+    upgrade: dist
+    cache_valid_time: 3600
+
+- name: Install base packages
+  apt:
+    name:
+      - curl
+      - wget
+      - git
+      - open-iscsi
+      - nfs-common
+      - cryptsetup
+      - dmsetup
+      - apparmor-utils
+      - "linux-headers-{{ ansible_facts['kernel'] }}"
+      - python3-pip
+      - jq
+    state: present
+
+- name: Enable iSCSI
+  systemd:
+    name: iscsid
+    enabled: true
+    state: started
+
+- name: Disable swap
+  command: swapoff -a
+  changed_when: false
+
+- name: Remove swap from fstab
+  replace:
+    path: /etc/fstab
+    regexp: '^([^#].*\sswap\s.*)$'
+    replace: '# \1'
+
+- name: Load kernel modules required by Longhorn
+  modprobe:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - nfs
+    - dm_crypt
+
+- name: Persist required kernel modules
+  copy:
+    dest: /etc/modules-load.d/longhorn.conf
+    content: |
+      nfs
+      dm_crypt
+    mode: "0644"
+
+- name: Raise inotify and file limits
+  copy:
+    dest: /etc/sysctl.d/99-kubernetes.conf
+    mode: "0644"
+    content: |
+      fs.inotify.max_user_instances={{ inotify_max_user_instances }}
+      fs.inotify.max_user_watches={{ inotify_max_user_watches }}
+      fs.file-max={{ file_max }}
+      vm.max_map_count=262144
+
+- name: Apply sysctl settings
+  command: sysctl --system
+  changed_when: false

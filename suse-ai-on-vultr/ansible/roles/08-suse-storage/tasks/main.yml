@@ -1,0 +1,50 @@
+---
+- name: Download longhornctl
+  get_url:
+    url: https://github.com/longhorn/cli/releases/download/v{{ suse_storage_version }}/longhornctl-linux-amd64
+    dest: /usr/local/bin/longhornctl
+    mode: "0755"
+    force: false
+
+- name: Create longhorn-system namespace
+  command: kubectl create namespace longhorn-system
+  register: ns_create
+  failed_when: ns_create.rc != 0 and 'AlreadyExists' not in ns_create.stderr
+  changed_when: ns_create.rc == 0
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+- name: Longhorn preflight check
+  command: longhornctl check preflight
+  register: preflight
+  failed_when: false
+  changed_when: false
+
+- name: Longhorn preflight install
+  command: longhornctl install preflight
+  register: preflight_install
+  failed_when: false
+  changed_when: preflight_install.rc == 0
+
+- name: Pull secret for longhorn-system
+  shell: |
+    kubectl create secret docker-registry application-collection \
+      --docker-server=dp.apps.rancher.io \
+      --docker-username={{ appco_username }} \
+      --docker-password={{ appco_user_token }} \
+      -n longhorn-system \
+      --dry-run=client -o yaml | kubectl apply -f -
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  no_log: true
+
+- name: Install SUSE Storage
+  shell: |
+    helm upgrade --install longhorn \
+      oci://dp.apps.rancher.io/charts/suse-storage \
+      --namespace longhorn-system \
+      --version {{ suse_storage_version }} \
+      --set global.imagePullSecrets={application-collection} \
+      --wait --timeout 10m
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml

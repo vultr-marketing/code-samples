@@ -1,0 +1,51 @@
+---
+- name: Render Ollama values
+  copy:
+    dest: /root/ollama_values.yaml
+    mode: "0644"
+    content: |
+      global:
+        imagePullSecrets:
+          - application-collection
+      # RKE2 doesn't default to the nvidia runtime; without this, GPU devices never mount and Ollama falls back to CPU.
+      runtimeClassName: nvidia
+      ollama:
+        models:
+          pull:
+            - "{{ ollama_default_model }}"
+          run:
+            - "{{ ollama_default_model }}"
+        gpu:
+          enabled: true
+          type: nvidia
+          number: 1
+          nvidiaResource: "nvidia.com/gpu"
+      persistentVolume:
+        enabled: true
+        size: {{ ollama_pvc_size }}
+        storageClass: longhorn
+      ingress:
+        enabled: false
+
+- name: Install Ollama
+  shell: |
+    helm upgrade --install ollama \
+      oci://dp.apps.rancher.io/charts/ollama \
+      -n {{ suse_ai_namespace }} \
+      -f /root/ollama_values.yaml \
+      --wait --timeout 15m
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+- name: Verify Ollama detects the GPU
+  shell: |
+    kubectl logs -n {{ suse_ai_namespace }} deploy/ollama 2>&1 \
+      | grep -i "inference compute" | tail -1
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  register: ollama_gpu_check
+  retries: 5
+  delay: 10
+  until: "'library=cuda' in ollama_gpu_check.stdout or 'library=CUDA' in ollama_gpu_check.stdout"
+  changed_when: false
+  failed_when: false

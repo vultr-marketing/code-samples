@@ -1,0 +1,83 @@
+---
+- name: Ensure RKE2 config dir
+  file:
+    path: /etc/rancher/rke2
+    state: directory
+    mode: "0755"
+
+- name: Write RKE2 config
+  copy:
+    dest: /etc/rancher/rke2/config.yaml
+    mode: "0644"
+    content: |
+      write-kubeconfig-mode: "0644"
+      system-default-registry: registry.rancher.com
+
+- name: Check if RKE2 already installed
+  stat:
+    path: /usr/local/bin/rke2
+  register: rke2_bin
+
+- name: Install RKE2 Prime
+  shell: |
+    curl -sfL https://get.rke2.io/ | \
+      INSTALL_RKE2_ARTIFACT_URL={{ prime_artifacts_url }}/rke2 \
+      INSTALL_RKE2_CHANNEL={{ rke2_channel }} sh -
+  args:
+    creates: /usr/local/bin/rke2
+  when: not rke2_bin.stat.exists
+
+- name: Enable + start rke2-server
+  systemd:
+    name: rke2-server
+    enabled: true
+    state: started
+
+- name: Wait for kubeconfig
+  wait_for:
+    path: /etc/rancher/rke2/rke2.yaml
+    timeout: 300
+
+- name: Wait for node Ready
+  shell: |
+    /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml \
+      get nodes --no-headers | awk '{print $2}'
+  register: node_status
+  retries: 10
+  delay: 30
+  until: node_status.stdout == "Ready"
+  changed_when: false
+
+- name: Persist kubectl + KUBECONFIG in root .bashrc
+  blockinfile:
+    path: /root/.bashrc
+    marker: "# {mark} RKE2 ENV"
+    block: |
+      export PATH=$PATH:/var/lib/rancher/rke2/bin
+      export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+      alias k=kubectl
+    create: true
+    mode: "0644"
+
+- name: Symlink kubectl + crictl globally
+  file:
+    src: "/var/lib/rancher/rke2/bin/{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    state: link
+    force: true
+  loop:
+    - kubectl
+    - crictl
+
+- name: Create root .kube directory
+  file:
+    path: /root/.kube
+    state: directory
+    mode: "0700"
+
+- name: Copy kubeconfig to ~/.kube/config
+  copy:
+    src: /etc/rancher/rke2/rke2.yaml
+    dest: /root/.kube/config
+    remote_src: true
+    mode: "0600"

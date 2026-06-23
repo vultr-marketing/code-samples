@@ -1,0 +1,98 @@
+---
+- name: Add suse-observability helm repo
+  command: helm repo add suse-observability https://charts.rancher.com/server-charts/prime/suse-observability
+  register: repo_add
+  failed_when: repo_add.rc != 0 and 'already exists' not in repo_add.stderr
+  changed_when: "'has been added' in repo_add.stdout"
+
+- name: Update repos
+  command: helm repo update
+  changed_when: false
+
+- name: Create suse-observability namespace
+  command: kubectl create namespace suse-observability
+  register: ns_create
+  failed_when: ns_create.rc != 0 and 'AlreadyExists' not in ns_create.stderr
+  changed_when: ns_create.rc == 0
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+- name: Pull secret + SA patch for acmesolver
+  shell: |
+    kubectl create secret docker-registry application-collection \
+      --docker-server=dp.apps.rancher.io \
+      --docker-username={{ appco_username }} \
+      --docker-password={{ appco_user_token }} \
+      -n suse-observability \
+      --dry-run=client -o yaml | kubectl apply -f -
+    kubectl patch serviceaccount default -n suse-observability \
+      -p '{"imagePullSecrets":[{"name":"application-collection"}]}'
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  no_log: true
+  changed_when: false
+
+- name: Generate base values via values-generator chart
+  shell: |
+    helm template \
+      --set license={{ suse_observability_reg_code }} \
+      --set baseUrl=https://{{ observability_hostname }} \
+      --set sizing.profile={{ observability_profile }} \
+      --set global.imageRegistry=registry.rancher.com \
+      suse-observability-values \
+      suse-observability/suse-observability-values \
+      | tee /root/generated_values.yaml | grep -i "admin password" > /root/observability_password.txt
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+
+- name: Read generated admin password
+  slurp:
+    src: /root/observability_password.txt
+  register: obs_pw
+
+- name: Capture observability admin password as a fact
+  set_fact:
+    observability_admin_password: >-
+      {{ (obs_pw['content'] | b64decode)
+         | regex_search('admin password is:\s*(\S+)', '\1')
+         | first | default('see /root/observability_password.txt') }}
+
+- name: Append Ingress + UI overrides
+  blockinfile:
+    path: /root/generated_values.yaml
+    marker: "# {mark} ANSIBLE-INGRESS-AND-UI"
+    block: |
+      ingress:
+        enabled: true
+        ingressClassName: nginx
+        annotations:
+          cert-manager.io/cluster-issuer: letsencrypt-prod
+          nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+        hosts:
+          - host: {{ observability_hostname }}
+        tls:
+          - hosts:
+              - {{ observability_hostname }}
+            secretName: observability-tls
+
+      stackstate:
+        components:
+          ui:
+            resources:
+              requests:
+                cpu: 100m
+                memory: 128Mi
+              limits:
+                cpu: 200m
+                memory: 256Mi
+
+- name: Install SUSE Observability
+  shell: |
+    helm upgrade --install \
+      --namespace suse-observability \
+      --values /root/generated_values.yaml \
+      --set global.storageClass=longhorn \
+      suse-observability suse-observability/suse-observability \
+      --wait --timeout 15m
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml

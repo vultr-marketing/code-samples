@@ -1,0 +1,78 @@
+---
+- name: Render Open WebUI values
+  copy:
+    dest: /root/owui_values.yaml
+    mode: "0644"
+    content: |
+      global:
+        imagePullSecrets:
+          - application-collection
+        tls:
+          source: letsEncrypt
+          letsEncrypt:
+            environment: production
+            email: {{ le_email | default(appco_username) }}
+            ingress:
+              class: nginx
+
+      ollamaUrls:
+        - http://ollama.{{ suse_ai_namespace }}.svc.cluster.local:11434
+
+      persistence:
+        enabled: true
+        storageClass: longhorn
+
+      ollama:
+        enabled: false
+
+      pipelines:
+        enabled: false
+        persistence:
+          storageClass: longhorn
+
+      service:
+        type: ClusterIP
+
+      ingress:
+        enabled: true
+        host: {{ webui_hostname }}
+        tls: true
+        annotations:
+          nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+          nginx.ingress.kubernetes.io/ssl-redirect: "true"
+
+      enableOpenaiApi: {{ deploy_vllm | bool | lower }}
+      openaiBaseApiUrls:
+        - http://vllm-router-service.{{ suse_ai_namespace }}.svc.cluster.local:80/v1
+
+      extraEnvVars:
+        - name: DEFAULT_MODELS
+          value: "{{ ollama_default_model }}"
+        - name: DEFAULT_USER_ROLE
+          value: "user"
+        - name: WEBUI_NAME
+          value: "SUSE AI"
+        - name: GLOBAL_LOG_LEVEL
+          value: INFO
+        - name: VECTOR_DB
+          value: "opensearch"
+        - name: OPENSEARCH_SSL
+          value: "false"
+        - name: OPENSEARCH_URI
+          value: http://opensearch-cluster-master.{{ suse_ai_namespace }}.svc.cluster.local:9200
+        - name: OPENSEARCH_USERNAME
+          value: admin
+        - name: OPENSEARCH_PASSWORD
+          value: "{{ opensearch_admin_password }}"
+        - name: OPENSEARCH_CERT_VERIFY
+          value: "false"
+
+- name: Install Open WebUI
+  shell: |
+    helm upgrade --install open-webui \
+      oci://dp.apps.rancher.io/charts/open-webui \
+      -n {{ suse_ai_namespace }} \
+      -f /root/owui_values.yaml \
+      --wait --timeout 10m
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml

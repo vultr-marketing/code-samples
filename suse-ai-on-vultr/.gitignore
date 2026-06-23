@@ -1,0 +1,12 @@
+.env
+*.tfstate
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+terraform/terraform.tfvars
+terraform/.ssh/
+terraform/tfplan
+ansible/inventory/hosts.ini
+ansible/.vault_pass
+*.retry
+__pycache__/

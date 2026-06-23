@@ -1,0 +1,20 @@
+---
+- name: Login to SUSE Application Collection
+  command: >
+    helm registry login dp.apps.rancher.io
+    -u {{ appco_username }}
+    -p {{ appco_user_token }}
+  environment:
+    KUBECONFIG: /etc/rancher/rke2/rke2.yaml
+  no_log: true
+  register: appco_login
+  changed_when: "'Login Succeeded' in appco_login.stdout or appco_login.rc == 0"
+
+- name: Login to SUSE Registry
+  command: >
+    helm registry login registry.suse.com
+    -u regcode
+    -p {{ scc_reg_code }}
+  no_log: true
+  register: suse_reg_login
+  changed_when: "'Login Succeeded' in suse_reg_login.stdout or suse_reg_login.rc == 0"
