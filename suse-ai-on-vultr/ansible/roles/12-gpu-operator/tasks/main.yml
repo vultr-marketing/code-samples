@@ -43,6 +43,11 @@
                 value: envvar
               - name: DEVICE_ID_STRATEGY
                 value: uuid
+          validator:
+            plugin:
+              env:
+                - name: WITH_WORKLOAD
+                  value: "false"
           cdi:
             enabled: false
 

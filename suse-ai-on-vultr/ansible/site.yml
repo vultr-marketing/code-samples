@@ -35,8 +35,6 @@
     - 08-suse-storage
     - role: 10-observability
       when: deploy_observability | bool
-    - role: 10b-observability-agent
-      when: deploy_observability | bool and service_token is defined and service_token != ""
 
 - name: Phase 3 — GPU + AI workloads
   hosts: suse_ai
